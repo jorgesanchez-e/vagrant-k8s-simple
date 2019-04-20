@@ -1,0 +1,217 @@
+---
+- hosts: all
+  remote_user: vagrant
+  vars:
+     master_ip: "{{ master_ip }}"
+     dns_nodes: "{{ dns_nodes }}"
+     k8s_cni: "https://raw.githubusercontent.com/coreos/flannel/a70459be0084506e4ec919aa1c114638878db11b/Documentation/kube-flannel.yml"
+
+  tasks:
+    - name: Updating SO
+      become: true
+      yum:
+         name: '*'
+         state: latest
+
+    - name: Configure /etc/hosts
+      become: true
+      lineinfile:
+        path: /etc/hosts
+        line: '{{ item }}'
+      loop: "{{  dns_nodes.split(',') }}"
+
+    - name: Add kubernetes repo
+      become: true
+      shell: 
+         cmd: |
+            cat <<EOF > /etc/yum.repos.d/kubernetes.repo
+            [kubernetes]
+            name=Kubernetes
+            baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+            enabled=1
+            gpgcheck=1
+            repo_gpgcheck=1
+            gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+            exclude=kube*
+            EOF
+      args:
+         executable: /bin/bash
+
+    - name: Installing epel
+      become: true
+      yum:
+        name: epel-release
+
+    - name: Install docker repository
+      become: true
+      command: yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+
+    - name: Enable docker repository
+      become: true
+      command: yum-config-manager --enable docker-ce-nightly
+
+    - name: Clean repo metada
+      become: true
+      command: yum clean all
+      args:
+         warn: no
+
+    - name: Install kubernetes rpm & utils
+      become: true
+      yum:
+        name: "{{ packages }}"
+        disable_excludes: "kubernetes"
+      vars:
+        packages:
+          - vim
+          - coreutils
+          - htop
+          - nmap-ncat
+          - bash-completion
+          - device-mapper-persistent-data
+          - lvm2
+          - kubelet 
+          - kubeadm 
+          - kubectl
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+
+    - name: Creating docker directory
+      become: true
+      file:
+        path: /etc/docker
+        state: directory
+
+    - name: Creating docker.d directory
+      become: true
+      file:
+        path: /etc/systemd/system/docker.service.d
+        state: directory
+
+    - name: Configuring docker daemon
+      become: true
+      shell:
+         cmd: |
+            cat <<EOF > /etc/docker/daemon.json
+            {
+              "exec-opts": ["native.cgroupdriver=systemd"],
+              "log-driver": "json-file",
+              "log-opts": {
+                 "max-size": "100m"
+              },
+              "storage-driver": "overlay2",
+              "storage-opts": [
+                "overlay2.override_kernel_check=true"
+              ]
+            }            
+            EOF
+      args:
+         executable: /bin/bash
+
+    - name: Enable docker service
+      become: true
+      systemd:
+        name: docker
+        enabled: true
+        state: started
+        daemon_reload: yes
+
+    - name: Enabling kubelet service
+      become: true
+      systemd:
+        name: kubelet
+        enabled: true
+
+    - name: Disabling FirewallD
+      become: true
+      systemd:
+        name: firewalld
+        enabled: false
+        state: stopped
+        masked: yes
+
+    - name: Disabling SELinux
+      become: true
+      selinux:
+         policy: targeted
+         state: permissive
+
+    - name: Editing fstab file
+      become: true
+      replace:
+        path: /etc/fstab
+        regexp: '^\s*([^\s|#]+\s+[^\s]+\s+swap\s+.+).*$'
+        replace: '# \1'
+
+    - name: Disablig Swap
+      become: true
+      shell: 
+         cmd: |
+          swapoff -a
+      args: 
+        executable: /bin/bash
+
+    - name: Configuring sysctl bridge for ip6tables
+      become: true
+      sysctl:
+        name: net.bridge.bridge-nf-call-ip6tables
+        value: 1
+        sysctl_file: /etc/sysctl.d/k8s.conf
+
+    - name: Configuring sysctl bridge for iptables
+      become: true
+      sysctl:
+        name: net.bridge.bridge-nf-call-iptables
+        value: 1
+        sysctl_file: /etc/sysctl.d/k8s.conf
+
+    - name: Creating k8s cluster
+      become: true
+      raw: kubeadm init --apiserver-advertise-address {{ master_ip }} --pod-network-cidr=10.244.0.0/16 | perl -lne '$token = $1 if ( /^kubeadm.+--token\s+([^\s]+)/ ); $hash = $1 if ( /--discovery-token-ca-cert-hash\s+([^\s]+)/ ); END{ print "$token|$hash" }' > /tmp/data.token
+      register: k8s_init
+      failed_when: k8s_init.rc != 0
+      tags: master
+
+    - name: Share token config
+      shell: nc --listen --keep-open --send-only --exec "/usr/bin/cat /tmp/data.token" 0.0.0.0 4444
+      async: 7200
+      poll: 0
+      tags: master
+
+    - name: Joining to cluster
+      become: true
+      shell: kubeadm join --discovery-token $(nc "{{ master_ip }}" 4444 --recv-only | cut -d\| -f1) --discovery-token-ca-cert-hash $(nc "{{ master_ip }}" 4444 --recv-only | cut -d\| -f2) "{{ master_ip }}":6443
+      tags: worker
+
+    - name: Creating .kube dir for user vagrant
+      file: 
+        path: ~/.kube
+        state: directory
+
+    - name: Copying kubectl config
+      become: true
+      copy:
+         src: /etc/kubernetes/admin.conf
+         dest: /home/vagrant/.kube/config
+         remote_src: yes
+         owner: vagrant
+         group: vagrant
+         mode: 0600
+      tags: master
+
+    - name: Installing kubernetes cni
+      shell:
+         cmd: |
+           kubectl apply -f {{ k8s_cni }}
+      args:
+         executable: /bin/bash
+      tags: master
+
+    - name: Making your life easier with completion
+      shell:
+        cmd: |
+          echo 'source <(kubectl completion bash)' >>~/.bashrc
+      args:
+         executable: /bin/bash
+
