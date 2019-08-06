@@ -13,6 +13,70 @@
          name: '*'
          state: latest
 
+    - name: Firewall Kubernetes API server
+      become: true
+      firewalld:
+        port: 6443/tcp
+        permanent: true
+        state: enabled
+      tags: master
+
+    - name: Firewall etcd server client API
+      become: true
+      firewalld:
+        port: 2379-2380/tcp
+        permanent: true
+        state: enabled
+      tags: master
+
+    - name: Firewall Kubelet API
+      become: true
+      firewalld:
+        port: 10250/tcp
+        permanent: true
+        state: enabled
+      tags: master
+
+    - name: Firewall kube-scheduler
+      become: true
+      firewalld:
+        port: 10251/tcp
+        permanent: true
+        state: enabled
+      tags: master
+
+    - name: Firewall kube-controller-manager
+      become: true
+      firewalld:
+        port: 10252/tcp
+        permanent: true
+        state: enabled
+      tags: master
+
+    - name: Firewall discover cert
+      become: true
+      firewalld:
+        port: 4444/tcp
+        permanent: true
+        state: enabled
+      tags: master
+
+    - name: Firewall Kubelet API (worker)
+      become: true
+      firewalld:
+        port: 10250/tcp
+        permanent: true
+        state: enabled
+      tags: worker
+
+    - name: Firewall NodePortServices (worker)
+      become: true
+      firewalld:
+        port: 30000-32767/tcp
+        permanent: true
+        state: enabled
+      tags: worker
+
     - name: Configure /etc/hosts
       become: true
       lineinfile:
@@ -113,7 +177,7 @@
       become: true
       systemd:
         name: docker
-        enabled: true
+        enabled: yes
         state: started
         daemon_reload: yes
 
@@ -121,15 +185,14 @@
       become: true
       systemd:
         name: kubelet
-        enabled: true
+        enabled: yes
 
-    - name: Disabling FirewallD
+    - name: Enabling FirewallD
       become: true
       systemd:
         name: firewalld
-        enabled: false
-        state: stopped
-        masked: yes
+        enabled: yes
+        state: started
 
     - name: Disabling SELinux
       become: true
