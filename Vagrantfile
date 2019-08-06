@@ -77,7 +77,6 @@ Vagrant.configure("2") do |config|
              ansible.skip_tags = 'worker'
           end
 
-          ansible.version = "2.7.10"
           ansible.compatibility_mode = "2.0"
           ansible.playbook = 'ansible/playbook.yml'
        end
